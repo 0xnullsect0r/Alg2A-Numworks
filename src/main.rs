@@ -740,7 +740,7 @@ pub fn main() -> u32 {
                     render_screen(&state);
                     state.dirty = false;
                 }
-                eadk::timing::msleep(100);
+                eadk::timing::msleep(200);
             }
         }
     }
