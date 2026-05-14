@@ -2,6 +2,8 @@ pub mod linear;
 pub mod quadratic;
 pub mod systems;
 pub mod complex_tools;
+pub mod poly;
+pub mod simplifier;
 
 #[cfg(target_os = "none")]
 use alloc::{string::String, vec::Vec};
@@ -23,6 +25,8 @@ impl ToolResult {
     pub fn set_warn(&mut self, w: &str) { self.warn = Some(w.into()); }
     pub fn finish(&mut self) { self.ready = true; }
 }
+
+pub fn fmt_i64_pub(n: i64) -> String { fmt_i64(n) }
 
 pub fn fmt_f64(v: f64) -> String {
     if v == f64::INFINITY { return "inf".into(); }

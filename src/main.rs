@@ -84,6 +84,27 @@ pub enum Screen {
     RefFormulas,
     RefProperties,
     RefQuadRef,
+    // Simplifier
+    SimplifierMenu,
+    SimpMulMono,
+    SimpDivMono,
+    SimpPowPow,
+    SimpPowProd,
+    SimpNegExp,
+    SimpCombine,
+    SimpDistrib,
+    SimpBinPow,
+    SimpIdentity,
+    // Polynomial tools
+    PolyMenu,
+    FoilExpand,
+    FactorTri,
+    DiffSquares,
+    PerfectSq,
+    GcfFactor,
+    PolyEval,
+    SynthDiv,
+    SumDiffCubes,
 }
 
 pub struct AppState {
@@ -96,6 +117,8 @@ pub struct AppState {
     pub dirty: bool,
     pub complex_op: usize,
     pub inequal_op: usize,
+    pub cubes_op: usize,
+    pub bin_pow_n: usize,  // 0 = ^2, 1 = ^3
     pub scroll: usize,
 }
 
@@ -111,6 +134,8 @@ impl AppState {
             dirty: true,
             complex_op: 0,
             inequal_op: 0,
+            cubes_op: 0,
+            bin_pow_n: 0,
             scroll: 0,
         }
     }
@@ -158,6 +183,40 @@ fn tool_info(screen: &Screen) -> (&'static str, &'static [&'static str]) {
                                     &["n (exponent):"]),
         Screen::ConjModulus     => ("Complex > Conj & Mod",
                                     &["a (Real):", "b (Imag):"]),
+        Screen::SimpMulMono  => ("Simp > Multiply Monomials",
+                                    &["c1:", "exp a:", "c2:", "exp b:"]),
+        Screen::SimpDivMono  => ("Simp > Divide Monomials",
+                                    &["c1:", "exp a:", "c2:", "exp b:"]),
+        Screen::SimpPowPow   => ("Simp > Power of Power",
+                                    &["coef c:", "inner exp a:", "outer exp b:"]),
+        Screen::SimpPowProd  => ("Simp > Power of Product",
+                                    &["coef c:", "exp a:", "power n:"]),
+        Screen::SimpNegExp   => ("Simp > Negative Exponent",
+                                    &["coef c:", "exp n (pos):"]),
+        Screen::SimpCombine  => ("Simp > Combine Like Terms",
+                                    &["coef a:", "coef b:", "coef c:", "exp n:"]),
+        Screen::SimpDistrib  => ("Simp > Distribute",
+                                    &["outer c:", "outer exp:", "t1 coef:", "t1 exp:", "t2 coef:", "t2 exp:"]),
+        Screen::SimpBinPow   => ("Simp > Binomial Power",
+                                    &["a (ax+b):", "b:"]),
+        Screen::SimpIdentity => ("Simp > Identity Rules",
+                                    &["base x:"]),
+        Screen::FoilExpand   => ("Poly > FOIL Expand",
+                                    &["a (ax+b):", "b:", "c (cx+d):", "d:"]),
+        Screen::FactorTri    => ("Poly > Factor Trinomial",
+                                    &["a (ax^2):", "b (bx):", "c:"]),
+        Screen::DiffSquares  => ("Poly > Diff of Squares",
+                                    &["a (ax^2 - b):", "b:"]),
+        Screen::PerfectSq    => ("Poly > Perfect Square?",
+                                    &["a:", "b:", "c:"]),
+        Screen::GcfFactor    => ("Poly > GCF Factor",
+                                    &["term 1:", "term 2:", "term 3:"]),
+        Screen::PolyEval     => ("Poly > Evaluate f(x)",
+                                    &["a (ax^2):", "b:", "c:", "x ="]),
+        Screen::SynthDiv     => ("Poly > Synthetic Division",
+                                    &["a (x^3):", "b (x^2):", "c (x):", "d:", "r (x-r):"]),
+        Screen::SumDiffCubes => ("Poly > Sum/Diff Cubes",
+                                    &["a:", "b:"]),
         _ => ("", &[]),
     }
 }
@@ -178,6 +237,23 @@ fn compute(state: &mut AppState) {
         Screen::ComplexArith    => tools::complex_tools::complex_arith(&state.inputs, state.complex_op, &mut state.result),
         Screen::PowersOfI       => tools::complex_tools::powers_of_i(&state.inputs, &mut state.result),
         Screen::ConjModulus     => tools::complex_tools::conj_modulus(&state.inputs, &mut state.result),
+        Screen::SimpMulMono  => tools::simplifier::multiply_monomials(&state.inputs, &mut state.result),
+        Screen::SimpDivMono  => tools::simplifier::divide_monomials(&state.inputs, &mut state.result),
+        Screen::SimpPowPow   => tools::simplifier::power_of_power(&state.inputs, &mut state.result),
+        Screen::SimpPowProd  => tools::simplifier::power_of_product(&state.inputs, &mut state.result),
+        Screen::SimpNegExp   => tools::simplifier::negative_exponent(&state.inputs, &mut state.result),
+        Screen::SimpCombine  => tools::simplifier::combine_like_terms(&state.inputs, &mut state.result),
+        Screen::SimpDistrib  => tools::simplifier::distribute(&state.inputs, &mut state.result),
+        Screen::SimpBinPow   => tools::simplifier::binomial_power(&state.inputs, state.bin_pow_n, &mut state.result),
+        Screen::SimpIdentity => tools::simplifier::exp_identity_rules(&state.inputs, &mut state.result),
+        Screen::FoilExpand      => tools::poly::foil_expand(&state.inputs, &mut state.result),
+        Screen::FactorTri       => tools::poly::factor_trinomial(&state.inputs, &mut state.result),
+        Screen::DiffSquares     => tools::poly::diff_of_squares(&state.inputs, &mut state.result),
+        Screen::PerfectSq       => tools::poly::perfect_square(&state.inputs, &mut state.result),
+        Screen::GcfFactor       => tools::poly::gcf_factor(&state.inputs, &mut state.result),
+        Screen::PolyEval        => tools::poly::poly_eval(&state.inputs, &mut state.result),
+        Screen::SynthDiv        => tools::poly::synthetic_div(&state.inputs, &mut state.result),
+        Screen::SumDiffCubes    => tools::poly::sum_diff_cubes(&state.inputs, state.cubes_op, &mut state.result),
         _ => {}
     }
     state.dirty = true;
@@ -196,8 +272,15 @@ fn parent_screen(screen: &Screen) -> Screen {
 
         Screen::RefFieldAxioms | Screen::RefFormulas | Screen::RefProperties | Screen::RefQuadRef => Screen::RefMenu,
 
+        Screen::SimpMulMono | Screen::SimpDivMono | Screen::SimpPowPow | Screen::SimpPowProd |
+        Screen::SimpNegExp | Screen::SimpCombine | Screen::SimpDistrib | Screen::SimpBinPow |
+        Screen::SimpIdentity => Screen::SimplifierMenu,
+
+        Screen::FoilExpand | Screen::FactorTri | Screen::DiffSquares | Screen::PerfectSq |
+        Screen::GcfFactor | Screen::PolyEval | Screen::SynthDiv | Screen::SumDiffCubes => Screen::PolyMenu,
+
         Screen::LinearMenu | Screen::QuadMenu | Screen::SystemsMenu |
-        Screen::ComplexMenu | Screen::RefMenu => Screen::MainMenu,
+        Screen::ComplexMenu | Screen::RefMenu | Screen::PolyMenu | Screen::SimplifierMenu => Screen::MainMenu,
 
         Screen::MainMenu => Screen::MainMenu,
     }
@@ -229,6 +312,22 @@ fn render_tool_screen(state: &AppState) {
             let op_str = ops[state.complex_op.min(3)];
             let mut info = "Op: ".to_string();
             info.push_str(op_str);
+            info.push_str("  (L/R change)");
+            draw_line(extra_y, &info, C_DIM, C_BG);
+            CONTENT_Y + ROW_H
+        }
+        Screen::SumDiffCubes => {
+            let op_str = if state.cubes_op == 0 { "+ (sum)" } else { "- (diff)" };
+            let mut info = "Op: ".to_string();
+            info.push_str(op_str);
+            info.push_str("  (L/R change)");
+            draw_line(extra_y, &info, C_DIM, C_BG);
+            CONTENT_Y + ROW_H
+        }
+        Screen::SimpBinPow => {
+            let pow_str = if state.bin_pow_n == 0 { "^2 (square)" } else { "^3 (cube)" };
+            let mut info = "Power: ".to_string();
+            info.push_str(pow_str);
             info.push_str("  (L/R change)");
             draw_line(extra_y, &info, C_DIM, C_BG);
             CONTENT_Y + ROW_H
@@ -267,7 +366,7 @@ fn render_screen(state: &AppState) {
     match &state.screen {
         Screen::MainMenu => {
             let items = &["Linear Functions", "Quadratic Fns", "Systems & Eq",
-                          "Complex Nums", "Reference"];
+                          "Complex Nums", "Polynomials", "Simplifier", "Reference"];
             let mut m = Menu::new("Alg2A Tools", items);
             m.selected = state.menu_sel;
             m.draw();
@@ -303,6 +402,21 @@ fn render_screen(state: &AppState) {
             m.selected = state.menu_sel;
             m.draw();
         }
+        Screen::PolyMenu => {
+            let items = &["FOIL Expand", "Factor Trinomial", "Diff of Squares",
+                          "Perfect Square?", "GCF Factor", "Poly Eval", "Synth Div", "Sum/Diff Cubes"];
+            let mut m = Menu::new("Polynomials", items);
+            m.selected = state.menu_sel;
+            m.draw();
+        }
+        Screen::SimplifierMenu => {
+            let items = &["Multiply Monomials", "Divide Monomials", "Power of Power",
+                          "Power of Product", "Negative Exponent", "Combine Like Terms",
+                          "Distribute", "Binomial Power", "Identity Rules"];
+            let mut m = Menu::new("Simplifier", items);
+            m.selected = state.menu_sel;
+            m.draw();
+        }
         Screen::RefFieldAxioms => {
             reference::draw_ref_card("Reference: Field Axioms",
                 reference::cards::FIELD_AXIOMS, state.scroll);
@@ -327,12 +441,14 @@ fn render_screen(state: &AppState) {
 
 fn handle_menu_event(state: &mut AppState, ev: Event) {
     let max_items = match state.screen {
-        Screen::MainMenu    => 5,
+        Screen::MainMenu    => 7,
         Screen::LinearMenu  => 5,
         Screen::QuadMenu    => 3,
         Screen::SystemsMenu => 3,
         Screen::ComplexMenu => 3,
-        Screen::RefMenu     => 4,
+        Screen::RefMenu         => 4,
+        Screen::PolyMenu        => 8,
+        Screen::SimplifierMenu  => 9,
         _ => 0,
     };
 
@@ -352,7 +468,9 @@ fn handle_menu_event(state: &mut AppState, ev: Event) {
                     1 => Screen::QuadMenu,
                     2 => Screen::SystemsMenu,
                     3 => Screen::ComplexMenu,
-                    4 => Screen::RefMenu,
+                    4 => Screen::PolyMenu,
+                    5 => Screen::SimplifierMenu,
+                    6 => Screen::RefMenu,
                     _ => return,
                 },
                 Screen::LinearMenu => match state.menu_sel {
@@ -386,6 +504,29 @@ fn handle_menu_event(state: &mut AppState, ev: Event) {
                     1 => Screen::RefFormulas,
                     2 => Screen::RefProperties,
                     3 => Screen::RefQuadRef,
+                    _ => return,
+                },
+                Screen::PolyMenu => match state.menu_sel {
+                    0 => Screen::FoilExpand,
+                    1 => Screen::FactorTri,
+                    2 => Screen::DiffSquares,
+                    3 => Screen::PerfectSq,
+                    4 => Screen::GcfFactor,
+                    5 => Screen::PolyEval,
+                    6 => Screen::SynthDiv,
+                    7 => Screen::SumDiffCubes,
+                    _ => return,
+                },
+                Screen::SimplifierMenu => match state.menu_sel {
+                    0 => Screen::SimpMulMono,
+                    1 => Screen::SimpDivMono,
+                    2 => Screen::SimpPowPow,
+                    3 => Screen::SimpPowProd,
+                    4 => Screen::SimpNegExp,
+                    5 => Screen::SimpCombine,
+                    6 => Screen::SimpDistrib,
+                    7 => Screen::SimpBinPow,
+                    8 => Screen::SimpIdentity,
                     _ => return,
                 },
                 _ => return,
@@ -455,6 +596,16 @@ fn handle_tool_event(state: &mut AppState, ev: Event) {
                     state.result.clear();
                     state.dirty = true;
                 }
+                Screen::SumDiffCubes => {
+                    state.cubes_op = (state.cubes_op + 1) % 2;
+                    state.result.clear();
+                    state.dirty = true;
+                }
+                Screen::SimpBinPow => {
+                    state.bin_pow_n = (state.bin_pow_n + 1) % 2;
+                    state.result.clear();
+                    state.dirty = true;
+                }
                 _ => {}
             }
         }
@@ -467,6 +618,16 @@ fn handle_tool_event(state: &mut AppState, ev: Event) {
                 }
                 Screen::ComplexArith => {
                     state.complex_op = (state.complex_op + 1) % 4;
+                    state.result.clear();
+                    state.dirty = true;
+                }
+                Screen::SumDiffCubes => {
+                    state.cubes_op = (state.cubes_op + 1) % 2;
+                    state.result.clear();
+                    state.dirty = true;
+                }
+                Screen::SimpBinPow => {
+                    state.bin_pow_n = (state.bin_pow_n + 1) % 2;
                     state.result.clear();
                     state.dirty = true;
                 }
@@ -515,7 +676,8 @@ fn handle_tool_event(state: &mut AppState, ev: Event) {
 
 fn is_menu_screen(screen: &Screen) -> bool {
     matches!(screen, Screen::MainMenu | Screen::LinearMenu | Screen::QuadMenu |
-             Screen::SystemsMenu | Screen::ComplexMenu | Screen::RefMenu)
+             Screen::SystemsMenu | Screen::ComplexMenu | Screen::RefMenu |
+             Screen::PolyMenu | Screen::SimplifierMenu)
 }
 
 fn is_ref_screen(screen: &Screen) -> bool {
