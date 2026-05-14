@@ -86,6 +86,7 @@ pub enum Screen {
     RefQuadRef,
     // Simplifier
     SimplifierMenu,
+    ExprSimplify,
     SimpMulMono,
     SimpDivMono,
     SimpPowPow,
@@ -183,6 +184,7 @@ fn tool_info(screen: &Screen) -> (&'static str, &'static [&'static str]) {
                                     &["n (exponent):"]),
         Screen::ConjModulus     => ("Complex > Conj & Mod",
                                     &["a (Real):", "b (Imag):"]),
+        Screen::ExprSimplify => ("General Simplify", &["Expression:"]),
         Screen::SimpMulMono  => ("Simp > Multiply Monomials",
                                     &["c1:", "exp a:", "c2:", "exp b:"]),
         Screen::SimpDivMono  => ("Simp > Divide Monomials",
@@ -237,6 +239,9 @@ fn compute(state: &mut AppState) {
         Screen::ComplexArith    => tools::complex_tools::complex_arith(&state.inputs, state.complex_op, &mut state.result),
         Screen::PowersOfI       => tools::complex_tools::powers_of_i(&state.inputs, &mut state.result),
         Screen::ConjModulus     => tools::complex_tools::conj_modulus(&state.inputs, &mut state.result),
+        Screen::ExprSimplify => {
+            state.result = tools::simplifier::general_simplify(state.inputs[0].as_str());
+        }
         Screen::SimpMulMono  => tools::simplifier::multiply_monomials(&state.inputs, &mut state.result),
         Screen::SimpDivMono  => tools::simplifier::divide_monomials(&state.inputs, &mut state.result),
         Screen::SimpPowPow   => tools::simplifier::power_of_power(&state.inputs, &mut state.result),
@@ -274,7 +279,7 @@ fn parent_screen(screen: &Screen) -> Screen {
 
         Screen::SimpMulMono | Screen::SimpDivMono | Screen::SimpPowPow | Screen::SimpPowProd |
         Screen::SimpNegExp | Screen::SimpCombine | Screen::SimpDistrib | Screen::SimpBinPow |
-        Screen::SimpIdentity => Screen::SimplifierMenu,
+        Screen::SimpIdentity | Screen::ExprSimplify => Screen::SimplifierMenu,
 
         Screen::FoilExpand | Screen::FactorTri | Screen::DiffSquares | Screen::PerfectSq |
         Screen::GcfFactor | Screen::PolyEval | Screen::SynthDiv | Screen::SumDiffCubes => Screen::PolyMenu,
@@ -347,7 +352,10 @@ fn render_tool_screen(state: &AppState) {
         let result_start = field_start_y + num as u16 * ROW_H + 2;
         draw_sep(result_start);
         let mut ry = result_start + 2;
+        let skip = if state.screen == Screen::ExprSimplify { state.scroll } else { 0 };
+        let mut shown = 0usize;
         for (label, value) in &state.result.lines {
+            if shown < skip { shown += 1; continue; }
             if ry + ROW_H > FOOTER_Y { break; }
             draw_result_line(ry, label, value);
             ry += ROW_H;
@@ -410,9 +418,9 @@ fn render_screen(state: &AppState) {
             m.draw();
         }
         Screen::SimplifierMenu => {
-            let items = &["Multiply Monomials", "Divide Monomials", "Power of Power",
-                          "Power of Product", "Negative Exponent", "Combine Like Terms",
-                          "Distribute", "Binomial Power", "Identity Rules"];
+            let items = &["General Simplify", "Mul Monomials", "Div Monomials",
+                          "Power of Power", "Power of Prod", "Neg Exponent",
+                          "Combine Like", "Distribute", "Binomial Power", "Identities"];
             let mut m = Menu::new("Simplifier", items);
             m.selected = state.menu_sel;
             m.draw();
@@ -448,7 +456,7 @@ fn handle_menu_event(state: &mut AppState, ev: Event) {
         Screen::ComplexMenu => 3,
         Screen::RefMenu         => 4,
         Screen::PolyMenu        => 8,
-        Screen::SimplifierMenu  => 9,
+        Screen::SimplifierMenu  => 10,
         _ => 0,
     };
 
@@ -518,15 +526,16 @@ fn handle_menu_event(state: &mut AppState, ev: Event) {
                     _ => return,
                 },
                 Screen::SimplifierMenu => match state.menu_sel {
-                    0 => Screen::SimpMulMono,
-                    1 => Screen::SimpDivMono,
-                    2 => Screen::SimpPowPow,
-                    3 => Screen::SimpPowProd,
-                    4 => Screen::SimpNegExp,
-                    5 => Screen::SimpCombine,
-                    6 => Screen::SimpDistrib,
-                    7 => Screen::SimpBinPow,
-                    8 => Screen::SimpIdentity,
+                    0 => Screen::ExprSimplify,
+                    1 => Screen::SimpMulMono,
+                    2 => Screen::SimpDivMono,
+                    3 => Screen::SimpPowPow,
+                    4 => Screen::SimpPowProd,
+                    5 => Screen::SimpNegExp,
+                    6 => Screen::SimpCombine,
+                    7 => Screen::SimpDistrib,
+                    8 => Screen::SimpBinPow,
+                    9 => Screen::SimpIdentity,
                     _ => return,
                 },
                 _ => return,
@@ -572,6 +581,55 @@ fn handle_ref_event(state: &mut AppState, ev: Event) {
 fn handle_tool_event(state: &mut AppState, ev: Event) {
     let (_, labels) = tool_info(&state.screen);
     let num_inputs = labels.len();
+
+    // ExprSimplify: intercept operator/variable keys and scroll
+    if state.screen == Screen::ExprSimplify {
+        match ev {
+            Event::Plus => {
+                state.inputs[0].push_char(b'+');
+                state.result.clear(); state.dirty = true; return;
+            }
+            Event::Multiplication => {
+                state.inputs[0].push_char(b'*');
+                state.result.clear(); state.dirty = true; return;
+            }
+            Event::Division => {
+                state.inputs[0].push_char(b'/');
+                state.result.clear(); state.dirty = true; return;
+            }
+            Event::Power => {
+                state.inputs[0].push_char(b'^');
+                state.result.clear(); state.dirty = true; return;
+            }
+            Event::Xnt => {
+                state.inputs[0].push_char(b'x');
+                state.result.clear(); state.dirty = true; return;
+            }
+            Event::LeftParenthesis => {
+                state.inputs[0].push_char(b'(');
+                state.result.clear(); state.dirty = true; return;
+            }
+            Event::RightParenthesis => {
+                state.inputs[0].push_char(b')');
+                state.result.clear(); state.dirty = true; return;
+            }
+            Event::Minus => {
+                state.inputs[0].push_char(b'-');
+                state.result.clear(); state.dirty = true; return;
+            }
+            Event::Up => {
+                if state.result.ready && state.scroll > 0 {
+                    state.scroll -= 1; state.dirty = true; return;
+                }
+            }
+            Event::Down => {
+                if state.result.ready {
+                    state.scroll += 1; state.dirty = true; return;
+                }
+            }
+            _ => {}
+        }
+    }
 
     match ev {
         Event::Up => {
@@ -740,7 +798,7 @@ pub fn main() -> u32 {
                     render_screen(&state);
                     state.dirty = false;
                 }
-                eadk::timing::msleep(200);
+                eadk::timing::msleep(250);
             }
         }
     }

@@ -1,5 +1,5 @@
 pub struct InputBuffer {
-    pub buf: [u8; 16],
+    pub buf: [u8; 32],
     pub len: usize,
 }
 
@@ -8,10 +8,10 @@ impl Default for InputBuffer {
 }
 
 impl InputBuffer {
-    pub fn new() -> Self { InputBuffer { buf: [0u8; 16], len: 0 } }
+    pub fn new() -> Self { InputBuffer { buf: [0u8; 32], len: 0 } }
 
     pub fn push_digit(&mut self, d: u8) {
-        if self.len < 15 {
+        if self.len < 31 {
             self.buf[self.len] = b'0' + d;
             self.len += 1;
         }
@@ -19,8 +19,15 @@ impl InputBuffer {
 
     pub fn push_dot(&mut self) {
         if self.as_str().contains('.') { return; }
-        if self.len < 15 {
+        if self.len < 31 {
             self.buf[self.len] = b'.';
+            self.len += 1;
+        }
+    }
+
+    pub fn push_char(&mut self, c: u8) {
+        if self.len < 31 {
+            self.buf[self.len] = c;
             self.len += 1;
         }
     }
@@ -32,7 +39,7 @@ impl InputBuffer {
         } else if self.buf[0] == b'-' {
             for i in 0..self.len - 1 { self.buf[i] = self.buf[i + 1]; }
             self.len -= 1;
-        } else if self.len < 15 {
+        } else if self.len < 31 {
             for i in (0..self.len).rev() { self.buf[i + 1] = self.buf[i]; }
             self.buf[0] = b'-';
             self.len += 1;

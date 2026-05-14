@@ -2,9 +2,13 @@
 /// Each function shows every intermediate step and labels the rule used.
 
 #[cfg(target_os = "none")]
-use alloc::string::{String, ToString};
+use alloc::{string::{String, ToString}, vec::Vec};
+#[cfg(target_os = "none")]
+use alloc::vec;
+#[cfg(target_os = "none")]
+use alloc::format;
 #[cfg(not(target_os = "none"))]
-use std::string::{String, ToString};
+use std::{string::{String, ToString}, vec::Vec};
 
 use crate::ui::input::InputBuffer;
 use super::{ToolResult, fmt_f64, try_fraction, gcd};
@@ -453,4 +457,363 @@ pub fn exp_identity_rules(inputs: &[InputBuffer], result: &mut ToolResult) {
     }
 
     result.finish();
+}
+
+// ── General Expression Simplifier ────────────────────────────────────────────
+
+#[derive(Clone)]
+enum GToken {
+    Num(f64),
+    Var,
+    Plus, Minus, Star, Slash, Caret, LParen, RParen,
+}
+
+fn g_tokenize(s: &str) -> Vec<GToken> {
+    let mut tokens = Vec::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b' ' | b'=' => { i += 1; }
+            b'0'..=b'9' | b'.' => {
+                let start = i;
+                while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                    i += 1;
+                }
+                let s2 = core::str::from_utf8(&bytes[start..i]).unwrap_or("0");
+                if let Some(n) = crate::ui::input::parse_f64(s2) {
+                    tokens.push(GToken::Num(n));
+                }
+            }
+            b'x' | b'X' => { tokens.push(GToken::Var); i += 1; }
+            b'+' => { tokens.push(GToken::Plus); i += 1; }
+            b'-' => { tokens.push(GToken::Minus); i += 1; }
+            b'*' => { tokens.push(GToken::Star); i += 1; }
+            b'/' => { tokens.push(GToken::Slash); i += 1; }
+            b'^' => { tokens.push(GToken::Caret); i += 1; }
+            b'(' => { tokens.push(GToken::LParen); i += 1; }
+            b')' => { tokens.push(GToken::RParen); i += 1; }
+            _ => { i += 1; }
+        }
+    }
+    tokens
+}
+
+#[derive(Clone)]
+struct GTerm { coeff: f64, power: u32 }
+type GPoly = Vec<GTerm>;
+
+fn g_const(c: f64) -> GPoly { vec![GTerm { coeff: c, power: 0 }] }
+fn g_term(c: f64, p: u32) -> GPoly { vec![GTerm { coeff: c, power: p }] }
+
+fn g_scale(p: &GPoly, s: f64) -> GPoly {
+    p.iter().map(|t| GTerm { coeff: t.coeff * s, power: t.power }).collect()
+}
+
+fn g_add(a: &GPoly, b: &GPoly) -> GPoly {
+    let mut r = a.clone(); r.extend(b.iter().cloned()); r
+}
+
+fn g_sub(a: &GPoly, b: &GPoly) -> GPoly { g_add(a, &g_scale(b, -1.0)) }
+
+fn g_mul(a: &GPoly, b: &GPoly) -> GPoly {
+    let mut r = Vec::new();
+    for ta in a { for tb in b {
+        r.push(GTerm { coeff: ta.coeff * tb.coeff, power: ta.power + tb.power });
+    }}
+    r
+}
+
+fn g_pow(p: &GPoly, n: u32) -> GPoly {
+    if n == 0 { return g_const(1.0); }
+    let mut r = p.clone();
+    for _ in 1..n { r = g_mul(&r, p); }
+    r
+}
+
+fn g_collect(p: GPoly) -> GPoly {
+    let mut map: Vec<(u32, f64)> = Vec::new();
+    for t in &p {
+        if let Some(e) = map.iter_mut().find(|(pw, _)| *pw == t.power) { e.1 += t.coeff; }
+        else { map.push((t.power, t.coeff)); }
+    }
+    let mut r: GPoly = map.into_iter()
+        .filter(|(_, c)| libm::fabs(*c) > 1e-12)
+        .map(|(power, coeff)| GTerm { coeff, power })
+        .collect();
+    r.sort_by(|a, b| b.power.cmp(&a.power));
+    if r.is_empty() { r.push(GTerm { coeff: 0.0, power: 0 }); }
+    r
+}
+
+fn g_fmt(p: &GPoly) -> String {
+    if p.is_empty() { return "0".into(); }
+    let mut s = String::new();
+    for (i, t) in p.iter().enumerate() {
+        let c = t.coeff; let pw = t.power;
+        let ac = libm::fabs(c);
+        if i > 0 {
+            if c < 0.0 { s.push_str(" - "); } else { s.push_str(" + "); }
+        }
+        let display_c = if i == 0 { c } else { ac };
+        match pw {
+            0 => s.push_str(&g_fmt_num(display_c)),
+            1 => {
+                if ac == 1.0 {
+                    if i == 0 && c < 0.0 { s.push_str("-x"); } else { s.push('x'); }
+                } else {
+                    s.push_str(&format!("{}x", g_fmt_num(display_c)));
+                }
+            }
+            _ => {
+                if ac == 1.0 {
+                    if i == 0 && c < 0.0 { s.push_str(&format!("-x^{}", pw)); }
+                    else { s.push_str(&format!("x^{}", pw)); }
+                } else {
+                    s.push_str(&format!("{}x^{}", g_fmt_num(display_c), pw));
+                }
+            }
+        }
+    }
+    if s.is_empty() { "0".into() } else { s }
+}
+
+fn g_fmt_num(v: f64) -> String {
+    if v == libm::round(v) && libm::fabs(v) < 1e9 { format!("{}", v as i64) }
+    else { format!("{:.3}", v) }
+}
+
+struct GParser<'a> {
+    toks: &'a [GToken],
+    pos: usize,
+    steps: Vec<(String, String)>,
+}
+
+impl<'a> GParser<'a> {
+    fn new(toks: &'a [GToken]) -> Self { GParser { toks, pos: 0, steps: Vec::new() } }
+
+    fn peek(&self) -> Option<&GToken> { self.toks.get(self.pos) }
+
+    fn peek2(&self) -> Option<&GToken> { self.toks.get(self.pos + 1) }
+
+    fn consume(&mut self) { self.pos += 1; }
+
+    fn parse_expr(&mut self) -> Result<GPoly, &'static str> {
+        let neg = if matches!(self.peek(), Some(GToken::Minus)) {
+            self.consume(); true
+        } else { false };
+
+        let mut left = self.parse_term()?;
+        if neg { left = g_scale(&left, -1.0); }
+
+        loop {
+            match self.peek() {
+                Some(GToken::Plus) => {
+                    self.consume();
+                    let right = self.parse_term()?;
+                    let before_terms = g_collect(left.clone());
+                    let combined = g_collect(g_add(&left, &right));
+                    if combined.len() < before_terms.len() + right.len() {
+                        self.steps.push(("Combine".into(),
+                            format!("{} + {} = {}", g_fmt(&before_terms), g_fmt(&right), g_fmt(&combined))));
+                    }
+                    left = combined;
+                }
+                Some(GToken::Minus) => {
+                    self.consume();
+                    let right = self.parse_term()?;
+                    let before_terms = g_collect(left.clone());
+                    let combined = g_collect(g_sub(&left, &right));
+                    if combined.len() < before_terms.len() + right.len() {
+                        self.steps.push(("Combine".into(),
+                            format!("{} - {} = {}", g_fmt(&before_terms), g_fmt(&right), g_fmt(&combined))));
+                    }
+                    left = combined;
+                }
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_term(&mut self) -> Result<GPoly, &'static str> {
+        let mut left = self.parse_power()?;
+        loop {
+            match self.peek() {
+                Some(GToken::Star) => {
+                    self.consume();
+                    let right = self.parse_power()?;
+                    let ls = g_fmt(&left); let rs = g_fmt(&right);
+                    left = g_collect(g_mul(&left, &right));
+                    self.steps.push(("Multiply".into(), format!("({})({}) = {}", ls, rs, g_fmt(&left))));
+                }
+                Some(GToken::Slash) => {
+                    self.consume();
+                    let right = self.parse_power()?;
+                    if right.len() == 1 && right[0].power == 0 && libm::fabs(right[0].coeff) > 1e-12 {
+                        let d = right[0].coeff;
+                        let ls = g_fmt(&left);
+                        left = g_collect(g_scale(&left, 1.0 / d));
+                        self.steps.push(("Divide".into(), format!("({}) / {} = {}", ls, g_fmt_num(d), g_fmt(&left))));
+                    } else {
+                        return Err("Can't divide by poly");
+                    }
+                }
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_power(&mut self) -> Result<GPoly, &'static str> {
+        let base = self.parse_primary()?;
+        if matches!(self.peek(), Some(GToken::Caret)) {
+            self.consume();
+            if let Some(GToken::Num(e)) = self.peek().cloned() {
+                self.consume();
+                let exp = e as u32;
+                let bs = g_fmt(&base);
+                let result = g_collect(g_pow(&base, exp));
+                if base.len() > 1 || exp > 1 {
+                    self.steps.push(("Expand".into(), format!("({}^{}) = {}", bs, exp, g_fmt(&result))));
+                }
+                return Ok(result);
+            }
+        }
+        Ok(base)
+    }
+
+    fn parse_primary(&mut self) -> Result<GPoly, &'static str> {
+        match self.peek().cloned() {
+            Some(GToken::Num(n)) => {
+                self.consume();
+                match self.peek() {
+                    Some(GToken::Var) => {
+                        self.consume();
+                        let exp = if matches!(self.peek(), Some(GToken::Caret)) {
+                            self.consume();
+                            if let Some(GToken::Num(e)) = self.peek().cloned() { self.consume(); e as u32 }
+                            else { return Err("Expected exponent"); }
+                        } else { 1 };
+                        Ok(g_term(n, exp))
+                    }
+                    Some(GToken::LParen) => {
+                        let inner = self.parse_paren()?;
+                        let is = g_fmt(&inner);
+                        let result = g_collect(g_scale(&inner, n));
+                        self.steps.push(("Distribute".into(), format!("{}({}) = {}", g_fmt_num(n), is, g_fmt(&result))));
+                        if matches!(self.peek(), Some(GToken::LParen)) {
+                            let right = self.parse_paren()?;
+                            let ls = g_fmt(&result); let rs = g_fmt(&right);
+                            self.push_foil_steps(&result, &right);
+                            let mul = g_collect(g_mul(&result, &right));
+                            self.steps.push(("Multiply".into(), format!("({})({}) = {}", ls, rs, g_fmt(&mul))));
+                            return Ok(mul);
+                        }
+                        Ok(result)
+                    }
+                    _ => Ok(g_const(n)),
+                }
+            }
+            Some(GToken::Var) => {
+                self.consume();
+                let exp = if matches!(self.peek(), Some(GToken::Caret)) {
+                    self.consume();
+                    if let Some(GToken::Num(e)) = self.peek().cloned() { self.consume(); e as u32 }
+                    else { return Err("Expected exponent"); }
+                } else { 1 };
+                Ok(g_term(1.0, exp))
+            }
+            Some(GToken::LParen) => {
+                let left = self.parse_paren()?;
+                if matches!(self.peek(), Some(GToken::LParen)) {
+                    let right = self.parse_paren()?;
+                    let ls = g_fmt(&left); let rs = g_fmt(&right);
+                    self.push_foil_steps(&left, &right);
+                    let result = g_collect(g_mul(&left, &right));
+                    self.steps.push(("Multiply".into(), format!("({})({}) = {}", ls, rs, g_fmt(&result))));
+                    if matches!(self.peek(), Some(GToken::LParen)) {
+                        let third = self.parse_paren()?;
+                        let ls2 = g_fmt(&result); let rs2 = g_fmt(&third);
+                        let result2 = g_collect(g_mul(&result, &third));
+                        self.steps.push(("Multiply".into(), format!("({})({}) = {}", ls2, rs2, g_fmt(&result2))));
+                        return Ok(result2);
+                    }
+                    return Ok(result);
+                }
+                Ok(left)
+            }
+            Some(GToken::Minus) => {
+                self.consume();
+                let inner = self.parse_primary()?;
+                Ok(g_scale(&inner, -1.0))
+            }
+            _ => Err("Unexpected token"),
+        }
+    }
+
+    fn parse_paren(&mut self) -> Result<GPoly, &'static str> {
+        if !matches!(self.peek(), Some(GToken::LParen)) { return Err("Expected ("); }
+        self.consume();
+        let inner = self.parse_expr()?;
+        if !matches!(self.peek(), Some(GToken::RParen)) { return Err("Expected )"); }
+        self.consume();
+        Ok(inner)
+    }
+
+    fn push_foil_steps(&mut self, a: &GPoly, b: &GPoly) {
+        if a.len() == 2 && b.len() == 2 {
+            let f = g_mul(&vec![a[0].clone()], &vec![b[0].clone()]);
+            let o = g_mul(&vec![a[0].clone()], &vec![b[1].clone()]);
+            let ii = g_mul(&vec![a[1].clone()], &vec![b[0].clone()]);
+            let l = g_mul(&vec![a[1].clone()], &vec![b[1].clone()]);
+            self.steps.push(("FOIL F".into(), format!("{}*{} = {}", g_fmt(&vec![a[0].clone()]), g_fmt(&vec![b[0].clone()]), g_fmt(&f))));
+            self.steps.push(("FOIL O".into(), format!("{}*{} = {}", g_fmt(&vec![a[0].clone()]), g_fmt(&vec![b[1].clone()]), g_fmt(&o))));
+            self.steps.push(("FOIL I".into(), format!("{}*{} = {}", g_fmt(&vec![a[1].clone()]), g_fmt(&vec![b[0].clone()]), g_fmt(&ii))));
+            self.steps.push(("FOIL L".into(), format!("{}*{} = {}", g_fmt(&vec![a[1].clone()]), g_fmt(&vec![b[1].clone()]), g_fmt(&l))));
+        }
+    }
+}
+
+pub fn general_simplify(expr: &str) -> ToolResult {
+    let mut result = ToolResult::new();
+    let expr = expr.trim();
+    if expr.is_empty() {
+        result.set_warn("Enter an expression");
+        result.finish();
+        return result;
+    }
+
+    let tokens = g_tokenize(expr);
+    if tokens.is_empty() {
+        result.set_warn("Empty expression");
+        result.finish();
+        return result;
+    }
+
+    let mut parser = GParser::new(&tokens);
+    match parser.parse_expr() {
+        Ok(poly) => {
+            let final_poly = g_collect(poly);
+            let final_str = g_fmt(&final_poly);
+            result.add("Simplified:", &final_str);
+            let degree = final_poly.iter().map(|t| t.power).max().unwrap_or(0);
+            if degree > 0 {
+                result.add("Degree:", &format!("{}", degree));
+            }
+            if parser.steps.is_empty() {
+                result.add("Note:", "Already in simplest form");
+            } else {
+                for (label, desc) in &parser.steps {
+                    result.add(label, desc);
+                }
+            }
+            result.finish();
+        }
+        Err(e) => {
+            result.set_warn(&format!("Parse error: {}", e));
+            result.finish();
+        }
+    }
+    result
 }
