@@ -7,6 +7,8 @@ use alloc::{string::{String, ToString}, vec::Vec};
 use alloc::vec;
 #[cfg(target_os = "none")]
 use alloc::format;
+#[cfg(target_os = "none")]
+use alloc::boxed::Box;
 #[cfg(not(target_os = "none"))]
 use std::{string::{String, ToString}, vec::Vec};
 
@@ -784,36 +786,452 @@ pub fn general_simplify(expr: &str) -> ToolResult {
         return result;
     }
 
-    let tokens = g_tokenize(expr);
-    if tokens.is_empty() {
-        result.set_warn("Empty expression");
-        result.finish();
-        return result;
-    }
+    // Detect if expression uses functions or constants → use FExpr path
+    let has_fns = expr.contains("sin") || expr.contains("cos") || expr.contains("tan")
+        || expr.contains("sqrt") || expr.contains("ln") || expr.contains("log")
+        || expr.contains("pi") || expr.contains("Pi") || expr.contains("PI")
+        || expr.contains('e');
 
-    let mut parser = GParser::new(&tokens);
-    match parser.parse_expr() {
-        Ok(poly) => {
-            let final_poly = g_collect(poly);
-            let final_str = g_fmt(&final_poly);
-            result.add("Simplified:", &final_str);
-            let degree = final_poly.iter().map(|t| t.power).max().unwrap_or(0);
-            if degree > 0 {
-                result.add("Degree:", &format!("{}", degree));
-            }
-            if parser.steps.is_empty() {
-                result.add("Note:", "Already in simplest form");
-            } else {
-                for (label, desc) in &parser.steps {
-                    result.add(label, desc);
+    if has_fns {
+        let tokens = f_tokenize(expr);
+        if tokens.is_empty() { result.set_warn("Empty expression"); result.finish(); return result; }
+        let mut parser = FParser::new(&tokens);
+        match parser.parse_expr() {
+            Ok(tree) => {
+                let mut steps: Vec<(String, String)> = Vec::new();
+                let simplified = f_simplify(&tree, &mut steps);
+                let final_str = if let Some(v) = f_eval(&simplified) {
+                    // Try nice radical form for sqrt results
+                    g_fmt_num(v)
+                } else {
+                    f_fmt(&simplified)
+                };
+                result.add("Result:", &final_str);
+                if steps.is_empty() {
+                    result.add("Note:", "Already simplified");
+                } else {
+                    for (label, desc) in &steps { result.add(label, desc); }
                 }
             }
-            result.finish();
+            Err(e) => { result.set_warn(&format!("Error: {}", e)); }
         }
-        Err(e) => {
-            result.set_warn(&format!("Parse error: {}", e));
-            result.finish();
+    } else {
+        let tokens = g_tokenize(expr);
+        if tokens.is_empty() { result.set_warn("Empty expression"); result.finish(); return result; }
+        let mut parser = GParser::new(&tokens);
+        match parser.parse_expr() {
+            Ok(poly) => {
+                let final_poly = g_collect(poly);
+                let final_str = g_fmt(&final_poly);
+                result.add("Simplified:", &final_str);
+                let degree = final_poly.iter().map(|t| t.power).max().unwrap_or(0);
+                if degree > 0 { result.add("Degree:", &format!("{}", degree)); }
+                if parser.steps.is_empty() {
+                    result.add("Note:", "Already in simplest form");
+                } else {
+                    for (label, desc) in &parser.steps { result.add(label, desc); }
+                }
+            }
+            Err(e) => { result.set_warn(&format!("Parse error: {}", e)); }
         }
     }
+    result.finish();
     result
+}
+
+// ── Function-aware expression evaluator ──────────────────────────────────────
+
+#[derive(Clone)]
+enum FToken {
+    Num(f64), Var, Pi, ConstE,
+    FnSin, FnCos, FnTan, FnSqrt, FnLn, FnLog,
+    Plus, Minus, Star, Slash, Caret, LParen, RParen,
+}
+
+fn f_tokenize(s: &str) -> Vec<FToken> {
+    let mut tokens = Vec::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b' ' | b'=' => { i += 1; }
+            b'0'..=b'9' | b'.' => {
+                let start = i;
+                while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') { i += 1; }
+                let s2 = core::str::from_utf8(&bytes[start..i]).unwrap_or("0");
+                if let Some(n) = crate::ui::input::parse_f64(s2) { tokens.push(FToken::Num(n)); }
+            }
+            b'a'..=b'z' | b'A'..=b'Z' => {
+                let start = i;
+                while i < bytes.len() && bytes[i].is_ascii_alphabetic() { i += 1; }
+                let word = core::str::from_utf8(&bytes[start..i]).unwrap_or("");
+                match word {
+                    "sin" | "Sin" | "SIN" => tokens.push(FToken::FnSin),
+                    "cos" | "Cos" | "COS" => tokens.push(FToken::FnCos),
+                    "tan" | "Tan" | "TAN" => tokens.push(FToken::FnTan),
+                    "sqrt" | "Sqrt" | "SQRT" => tokens.push(FToken::FnSqrt),
+                    "ln"  | "Ln"  | "LN"  => tokens.push(FToken::FnLn),
+                    "log" | "Log" | "LOG" => tokens.push(FToken::FnLog),
+                    "pi"  | "Pi"  | "PI"  => tokens.push(FToken::Pi),
+                    "e"   | "E"           => tokens.push(FToken::ConstE),
+                    "x"   | "X"           => tokens.push(FToken::Var),
+                    _ => {}
+                }
+            }
+            b'+' => { tokens.push(FToken::Plus);   i += 1; }
+            b'-' => { tokens.push(FToken::Minus);  i += 1; }
+            b'*' => { tokens.push(FToken::Star);   i += 1; }
+            b'/' => { tokens.push(FToken::Slash);  i += 1; }
+            b'^' => { tokens.push(FToken::Caret);  i += 1; }
+            b'(' => { tokens.push(FToken::LParen); i += 1; }
+            b')' => { tokens.push(FToken::RParen); i += 1; }
+            _ => { i += 1; }
+        }
+    }
+    tokens
+}
+
+#[derive(Clone)]
+enum FExpr {
+    Num(f64), Var, Pi, ConstE,
+    Neg(Box<FExpr>),
+    Add(Box<FExpr>, Box<FExpr>),
+    Sub(Box<FExpr>, Box<FExpr>),
+    Mul(Box<FExpr>, Box<FExpr>),
+    Div(Box<FExpr>, Box<FExpr>),
+    Pow(Box<FExpr>, Box<FExpr>),
+    Sin(Box<FExpr>), Cos(Box<FExpr>), Tan(Box<FExpr>),
+    Sqrt(Box<FExpr>), Ln(Box<FExpr>), Log(Box<FExpr>),
+}
+
+const F_PI: f64 = 3.14159265358979323846;
+const F_EU: f64 = 2.71828182845904523536;
+
+fn f_eval(e: &FExpr) -> Option<f64> {
+    match e {
+        FExpr::Num(n)  => Some(*n),
+        FExpr::Pi      => Some(F_PI),
+        FExpr::ConstE  => Some(F_EU),
+        FExpr::Var     => None,
+        FExpr::Neg(a)  => Some(-f_eval(a)?),
+        FExpr::Add(a,b) => Some(f_eval(a)? + f_eval(b)?),
+        FExpr::Sub(a,b) => Some(f_eval(a)? - f_eval(b)?),
+        FExpr::Mul(a,b) => Some(f_eval(a)? * f_eval(b)?),
+        FExpr::Div(a,b) => { let bv = f_eval(b)?; if libm::fabs(bv)<1e-12 {None} else {Some(f_eval(a)?/bv)} }
+        FExpr::Pow(a,b) => Some(libm::pow(f_eval(a)?, f_eval(b)?)),
+        FExpr::Sin(a)   => { let v=f_eval(a)?; Some(f_round_trig(libm::sin(v))) }
+        FExpr::Cos(a)   => { let v=f_eval(a)?; Some(f_round_trig(libm::cos(v))) }
+        FExpr::Tan(a)   => { let v=f_eval(a)?; Some(f_round_trig(libm::tan(v))) }
+        FExpr::Sqrt(a)  => { let v=f_eval(a)?; if v < -1e-12 {None} else {Some(libm::sqrt(libm::fabs(v)))} }
+        FExpr::Ln(a)    => { let v=f_eval(a)?; if v<=0.0{None} else {Some(libm::log(v))} }
+        FExpr::Log(a)   => { let v=f_eval(a)?; if v<=0.0{None} else {Some(libm::log10(v))} }
+    }
+}
+
+fn f_round_trig(v: f64) -> f64 {
+    if libm::fabs(v) < 1e-10 { 0.0 }
+    else if libm::fabs(v - 1.0) < 1e-10 { 1.0 }
+    else if libm::fabs(v + 1.0) < 1e-10 { -1.0 }
+    else { v }
+}
+
+fn f_has_var(e: &FExpr) -> bool {
+    match e {
+        FExpr::Var => true,
+        FExpr::Num(_) | FExpr::Pi | FExpr::ConstE => false,
+        FExpr::Neg(a) => f_has_var(a),
+        FExpr::Add(a,b)|FExpr::Sub(a,b)|FExpr::Mul(a,b)|FExpr::Div(a,b)|FExpr::Pow(a,b) => f_has_var(a)||f_has_var(b),
+        FExpr::Sin(a)|FExpr::Cos(a)|FExpr::Tan(a)|FExpr::Sqrt(a)|FExpr::Ln(a)|FExpr::Log(a) => f_has_var(a),
+    }
+}
+
+fn f_fmt(e: &FExpr) -> String {
+    match e {
+        FExpr::Num(n)  => g_fmt_num(*n),
+        FExpr::Pi      => "pi".into(),
+        FExpr::ConstE  => "e".into(),
+        FExpr::Var     => "x".into(),
+        FExpr::Neg(a)  => { let s = f_fmt(a); format!("-({})", s) }
+        FExpr::Add(a,b) => format!("{} + {}", f_fmt(a), f_fmt(b)),
+        FExpr::Sub(a,b) => format!("{} - {}", f_fmt(a), f_fmt(b)),
+        FExpr::Mul(a,b) => {
+            let (af, bf) = (f_fmt(a), f_fmt(b));
+            match (a.as_ref(), b.as_ref()) {
+                (FExpr::Add(..)|FExpr::Sub(..), _) => format!("({})*{}", af, bf),
+                (_, FExpr::Add(..)|FExpr::Sub(..)) => format!("{}*({})", af, bf),
+                _ => format!("{}*{}", af, bf),
+            }
+        }
+        FExpr::Div(a,b)  => format!("({})/({})", f_fmt(a), f_fmt(b)),
+        FExpr::Pow(a,b)  => {
+            match a.as_ref() {
+                FExpr::Add(..)|FExpr::Sub(..)|FExpr::Mul(..)|FExpr::Div(..) => format!("({})^{}", f_fmt(a), f_fmt(b)),
+                _ => format!("{}^{}", f_fmt(a), f_fmt(b)),
+            }
+        }
+        FExpr::Sin(a)  => format!("sin({})", f_fmt(a)),
+        FExpr::Cos(a)  => format!("cos({})", f_fmt(a)),
+        FExpr::Tan(a)  => format!("tan({})", f_fmt(a)),
+        FExpr::Sqrt(a) => format!("sqrt({})", f_fmt(a)),
+        FExpr::Ln(a)   => format!("ln({})", f_fmt(a)),
+        FExpr::Log(a)  => format!("log({})", f_fmt(a)),
+    }
+}
+
+struct FParser<'a> { toks: &'a [FToken], pos: usize }
+
+impl<'a> FParser<'a> {
+    fn new(toks: &'a [FToken]) -> Self { FParser { toks, pos: 0 } }
+    fn peek(&self) -> Option<&FToken> { self.toks.get(self.pos) }
+    fn consume(&mut self) { self.pos += 1; }
+
+    fn parse_expr(&mut self) -> Result<FExpr, &'static str> {
+        let neg = if matches!(self.peek(), Some(FToken::Minus)) { self.consume(); true } else { false };
+        let mut left = self.parse_term()?;
+        if neg { left = FExpr::Neg(Box::new(left)); }
+        loop {
+            match self.peek() {
+                Some(FToken::Plus)  => { self.consume(); let r = self.parse_term()?; left = FExpr::Add(Box::new(left), Box::new(r)); }
+                Some(FToken::Minus) => { self.consume(); let r = self.parse_term()?; left = FExpr::Sub(Box::new(left), Box::new(r)); }
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_term(&mut self) -> Result<FExpr, &'static str> {
+        let mut left = self.parse_power()?;
+        loop {
+            match self.peek() {
+                Some(FToken::Star)  => { self.consume(); let r = self.parse_power()?; left = FExpr::Mul(Box::new(left), Box::new(r)); }
+                Some(FToken::Slash) => { self.consume(); let r = self.parse_power()?; left = FExpr::Div(Box::new(left), Box::new(r)); }
+                // Implicit multiplication: number/const directly followed by function/var/paren
+                Some(FToken::FnSin)|Some(FToken::FnCos)|Some(FToken::FnTan)|Some(FToken::FnSqrt)|
+                Some(FToken::FnLn)|Some(FToken::FnLog)|Some(FToken::Var)|Some(FToken::LParen)|
+                Some(FToken::Pi)|Some(FToken::ConstE) => {
+                    match &left {
+                        FExpr::Num(_)|FExpr::Pi|FExpr::ConstE => {
+                            let r = self.parse_power()?;
+                            left = FExpr::Mul(Box::new(left), Box::new(r));
+                        }
+                        _ => break,
+                    }
+                }
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_power(&mut self) -> Result<FExpr, &'static str> {
+        let base = self.parse_primary()?;
+        if matches!(self.peek(), Some(FToken::Caret)) {
+            self.consume();
+            let exp = self.parse_primary()?;
+            return Ok(FExpr::Pow(Box::new(base), Box::new(exp)));
+        }
+        Ok(base)
+    }
+
+    fn parse_primary(&mut self) -> Result<FExpr, &'static str> {
+        match self.peek().cloned() {
+            Some(FToken::Num(n))  => { self.consume(); Ok(FExpr::Num(n)) }
+            Some(FToken::Pi)      => { self.consume(); Ok(FExpr::Pi) }
+            Some(FToken::ConstE)  => { self.consume(); Ok(FExpr::ConstE) }
+            Some(FToken::Var)     => { self.consume(); Ok(FExpr::Var) }
+            Some(FToken::Minus)   => { self.consume(); let i = self.parse_primary()?; Ok(FExpr::Neg(Box::new(i))) }
+            Some(FToken::LParen)  => {
+                self.consume();
+                let inner = self.parse_expr()?;
+                if !matches!(self.peek(), Some(FToken::RParen)) { return Err("Expected )"); }
+                self.consume();
+                // check for implicit mul: (a)(b)
+                if matches!(self.peek(), Some(FToken::LParen)) {
+                    self.consume();
+                    let right = self.parse_expr()?;
+                    if !matches!(self.peek(), Some(FToken::RParen)) { return Err("Expected )"); }
+                    self.consume();
+                    return Ok(FExpr::Mul(Box::new(inner), Box::new(right)));
+                }
+                Ok(inner)
+            }
+            Some(FToken::FnSin)  => { self.consume(); Ok(FExpr::Sin(Box::new(self.parse_fn_arg()?))) }
+            Some(FToken::FnCos)  => { self.consume(); Ok(FExpr::Cos(Box::new(self.parse_fn_arg()?))) }
+            Some(FToken::FnTan)  => { self.consume(); Ok(FExpr::Tan(Box::new(self.parse_fn_arg()?))) }
+            Some(FToken::FnSqrt) => { self.consume(); Ok(FExpr::Sqrt(Box::new(self.parse_fn_arg()?))) }
+            Some(FToken::FnLn)   => { self.consume(); Ok(FExpr::Ln(Box::new(self.parse_fn_arg()?))) }
+            Some(FToken::FnLog)  => { self.consume(); Ok(FExpr::Log(Box::new(self.parse_fn_arg()?))) }
+            _ => Err("Unexpected token"),
+        }
+    }
+
+    fn parse_fn_arg(&mut self) -> Result<FExpr, &'static str> {
+        if matches!(self.peek(), Some(FToken::LParen)) {
+            self.consume();
+            let inner = self.parse_expr()?;
+            if !matches!(self.peek(), Some(FToken::RParen)) { return Err("Expected )"); }
+            self.consume();
+            Ok(inner)
+        } else {
+            self.parse_primary()
+        }
+    }
+}
+
+fn f_simplify(e: &FExpr, steps: &mut Vec<(String, String)>) -> FExpr {
+    match e {
+        FExpr::Sin(a) => {
+            let a_s = f_simplify(a, steps);
+            if let Some(v) = f_eval(&a_s) {
+                let r = f_round_trig(libm::sin(v));
+                steps.push(("sin".into(), format!("sin({}) = {}", f_fmt(&a_s), g_fmt_num(r))));
+                FExpr::Num(r)
+            } else { FExpr::Sin(Box::new(a_s)) }
+        }
+        FExpr::Cos(a) => {
+            let a_s = f_simplify(a, steps);
+            if let Some(v) = f_eval(&a_s) {
+                let r = f_round_trig(libm::cos(v));
+                steps.push(("cos".into(), format!("cos({}) = {}", f_fmt(&a_s), g_fmt_num(r))));
+                FExpr::Num(r)
+            } else { FExpr::Cos(Box::new(a_s)) }
+        }
+        FExpr::Tan(a) => {
+            let a_s = f_simplify(a, steps);
+            if let Some(v) = f_eval(&a_s) {
+                let r = f_round_trig(libm::tan(v));
+                steps.push(("tan".into(), format!("tan({}) = {}", f_fmt(&a_s), g_fmt_num(r))));
+                FExpr::Num(r)
+            } else { FExpr::Tan(Box::new(a_s)) }
+        }
+        FExpr::Sqrt(a) => {
+            let a_s = f_simplify(a, steps);
+            if let Some(v) = f_eval(&a_s) {
+                let (coeff, rad) = simplify_sqrt_int(v);
+                let display = if rad == 1 {
+                    g_fmt_num(coeff as f64)
+                } else if coeff == 1 {
+                    format!("sqrt({})", rad)
+                } else {
+                    format!("{}*sqrt({})", coeff, rad)
+                };
+                steps.push(("sqrt".into(), format!("sqrt({}) = {}", f_fmt(&a_s), display)));
+                FExpr::Num(libm::sqrt(libm::fabs(v)))
+            } else { FExpr::Sqrt(Box::new(a_s)) }
+        }
+        FExpr::Ln(a) => {
+            let a_s = f_simplify(a, steps);
+            if let Some(v) = f_eval(&a_s) {
+                if v <= 0.0 { return FExpr::Ln(Box::new(a_s)); }
+                let r = libm::log(v);
+                let r = if libm::fabs(r - libm::round(r)) < 1e-10 { libm::round(r) } else { r };
+                steps.push(("ln".into(), format!("ln({}) = {}", f_fmt(&a_s), g_fmt_num(r))));
+                FExpr::Num(r)
+            } else { FExpr::Ln(Box::new(a_s)) }
+        }
+        FExpr::Log(a) => {
+            let a_s = f_simplify(a, steps);
+            if let Some(v) = f_eval(&a_s) {
+                if v <= 0.0 { return FExpr::Log(Box::new(a_s)); }
+                let r = libm::log10(v);
+                let r = if libm::fabs(r - libm::round(r)) < 1e-10 { libm::round(r) } else { r };
+                steps.push(("log".into(), format!("log({}) = {}", f_fmt(&a_s), g_fmt_num(r))));
+                FExpr::Num(r)
+            } else { FExpr::Log(Box::new(a_s)) }
+        }
+        FExpr::Pi => {
+            steps.push(("const".into(), format!("pi = {:.5}", F_PI)));
+            FExpr::Pi
+        }
+        FExpr::ConstE => {
+            steps.push(("const".into(), format!("e = {:.5}", F_EU)));
+            FExpr::ConstE
+        }
+        FExpr::Neg(a) => {
+            let a_s = f_simplify(a, steps);
+            if let Some(v) = f_eval(&a_s) { FExpr::Num(-v) } else { FExpr::Neg(Box::new(a_s)) }
+        }
+        FExpr::Add(a, b) => {
+            let a_s = f_simplify(a, steps);
+            let b_s = f_simplify(b, steps);
+            let node = FExpr::Add(Box::new(a_s.clone()), Box::new(b_s.clone()));
+            if !f_has_var(&a_s) && !f_has_var(&b_s) {
+                if let Some(v) = f_eval(&node) {
+                    steps.push(("add".into(), format!("{} + {} = {}", f_fmt(&a_s), f_fmt(&b_s), g_fmt_num(v))));
+                    return FExpr::Num(v);
+                }
+            }
+            node
+        }
+        FExpr::Sub(a, b) => {
+            let a_s = f_simplify(a, steps);
+            let b_s = f_simplify(b, steps);
+            let node = FExpr::Sub(Box::new(a_s.clone()), Box::new(b_s.clone()));
+            if !f_has_var(&a_s) && !f_has_var(&b_s) {
+                if let Some(v) = f_eval(&node) {
+                    steps.push(("sub".into(), format!("{} - {} = {}", f_fmt(&a_s), f_fmt(&b_s), g_fmt_num(v))));
+                    return FExpr::Num(v);
+                }
+            }
+            node
+        }
+        FExpr::Mul(a, b) => {
+            let a_s = f_simplify(a, steps);
+            let b_s = f_simplify(b, steps);
+            let node = FExpr::Mul(Box::new(a_s.clone()), Box::new(b_s.clone()));
+            if !f_has_var(&a_s) && !f_has_var(&b_s) {
+                if let Some(v) = f_eval(&node) {
+                    steps.push(("mul".into(), format!("{}*{} = {}", f_fmt(&a_s), f_fmt(&b_s), g_fmt_num(v))));
+                    return FExpr::Num(v);
+                }
+            }
+            node
+        }
+        FExpr::Div(a, b) => {
+            let a_s = f_simplify(a, steps);
+            let b_s = f_simplify(b, steps);
+            let node = FExpr::Div(Box::new(a_s.clone()), Box::new(b_s.clone()));
+            if !f_has_var(&a_s) && !f_has_var(&b_s) {
+                if let Some(v) = f_eval(&node) {
+                    steps.push(("div".into(), format!("{}/{} = {}", f_fmt(&a_s), f_fmt(&b_s), g_fmt_num(v))));
+                    return FExpr::Num(v);
+                }
+            }
+            node
+        }
+        FExpr::Pow(a, b) => {
+            let a_s = f_simplify(a, steps);
+            let b_s = f_simplify(b, steps);
+            let node = FExpr::Pow(Box::new(a_s.clone()), Box::new(b_s.clone()));
+            if !f_has_var(&a_s) && !f_has_var(&b_s) {
+                if let Some(v) = f_eval(&node) {
+                    steps.push(("pow".into(), format!("{}^{} = {}", f_fmt(&a_s), f_fmt(&b_s), g_fmt_num(v))));
+                    return FExpr::Num(v);
+                }
+            }
+            node
+        }
+        other => other.clone(),
+    }
+}
+
+/// Simplify sqrt(n) → coeff * sqrt(radicand) where radicand is square-free.
+/// Returns (coeff, radicand). E.g. sqrt(72) → (6, 2), sqrt(9) → (3, 1).
+fn simplify_sqrt_int(n: f64) -> (u32, u32) {
+    if n < 0.0 { return (0, 0); }
+    let n_int = libm::round(n) as u32;
+    // Check perfect square
+    let root = libm::sqrt(n);
+    let root_int = libm::round(root) as u32;
+    if root_int * root_int == n_int { return (root_int, 1); }
+    // Find largest perfect-square factor
+    let mut best_coeff = 1u32;
+    let mut best_rad = n_int;
+    let mut k = 2u32;
+    while k * k <= n_int {
+        let k2 = k * k;
+        if n_int % k2 == 0 { best_coeff = k; best_rad = n_int / k2; }
+        k += 1;
+    }
+    (best_coeff, best_rad)
 }

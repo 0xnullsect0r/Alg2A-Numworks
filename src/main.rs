@@ -585,47 +585,28 @@ fn handle_tool_event(state: &mut AppState, ev: Event) {
     // ExprSimplify: intercept operator/variable keys and scroll
     if state.screen == Screen::ExprSimplify {
         match ev {
-            Event::Plus => {
-                state.inputs[0].push_char(b'+');
-                state.result.clear(); state.dirty = true; return;
-            }
-            Event::Multiplication => {
-                state.inputs[0].push_char(b'*');
-                state.result.clear(); state.dirty = true; return;
-            }
-            Event::Division => {
-                state.inputs[0].push_char(b'/');
-                state.result.clear(); state.dirty = true; return;
-            }
-            Event::Power => {
-                state.inputs[0].push_char(b'^');
-                state.result.clear(); state.dirty = true; return;
-            }
-            Event::Xnt => {
-                state.inputs[0].push_char(b'x');
-                state.result.clear(); state.dirty = true; return;
-            }
-            Event::LeftParenthesis => {
-                state.inputs[0].push_char(b'(');
-                state.result.clear(); state.dirty = true; return;
-            }
-            Event::RightParenthesis => {
-                state.inputs[0].push_char(b')');
-                state.result.clear(); state.dirty = true; return;
-            }
-            Event::Minus => {
-                state.inputs[0].push_char(b'-');
-                state.result.clear(); state.dirty = true; return;
-            }
+            Event::Plus => { state.inputs[0].push_char(b'+'); state.result.clear(); state.dirty = true; return; }
+            Event::Multiplication => { state.inputs[0].push_char(b'*'); state.result.clear(); state.dirty = true; return; }
+            Event::Division => { state.inputs[0].push_char(b'/'); state.result.clear(); state.dirty = true; return; }
+            Event::Power => { state.inputs[0].push_char(b'^'); state.result.clear(); state.dirty = true; return; }
+            Event::Xnt => { state.inputs[0].push_char(b'x'); state.result.clear(); state.dirty = true; return; }
+            Event::LeftParenthesis => { state.inputs[0].push_char(b'('); state.result.clear(); state.dirty = true; return; }
+            Event::RightParenthesis => { state.inputs[0].push_char(b')'); state.result.clear(); state.dirty = true; return; }
+            Event::Minus => { state.inputs[0].push_char(b'-'); state.result.clear(); state.dirty = true; return; }
+            Event::Sine => { state.inputs[0].push_str("sin("); state.result.clear(); state.dirty = true; return; }
+            Event::Cosine => { state.inputs[0].push_str("cos("); state.result.clear(); state.dirty = true; return; }
+            Event::Tangent => { state.inputs[0].push_str("tan("); state.result.clear(); state.dirty = true; return; }
+            Event::Sqrt => { state.inputs[0].push_str("sqrt("); state.result.clear(); state.dirty = true; return; }
+            Event::Ln => { state.inputs[0].push_str("ln("); state.result.clear(); state.dirty = true; return; }
+            Event::Log => { state.inputs[0].push_str("log("); state.result.clear(); state.dirty = true; return; }
+            Event::Pi => { state.inputs[0].push_str("pi"); state.result.clear(); state.dirty = true; return; }
+            Event::Exp => { state.inputs[0].push_str("e^("); state.result.clear(); state.dirty = true; return; }
+            Event::Square => { state.inputs[0].push_str("^2"); state.result.clear(); state.dirty = true; return; }
             Event::Up => {
-                if state.result.ready && state.scroll > 0 {
-                    state.scroll -= 1; state.dirty = true; return;
-                }
+                if state.result.ready && state.scroll > 0 { state.scroll -= 1; state.dirty = true; return; }
             }
             Event::Down => {
-                if state.result.ready {
-                    state.scroll += 1; state.dirty = true; return;
-                }
+                if state.result.ready { state.scroll += 1; state.dirty = true; return; }
             }
             _ => {}
         }
