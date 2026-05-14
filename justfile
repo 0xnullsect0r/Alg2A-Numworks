@@ -1,0 +1,43 @@
+current_target := shell("rustc -vV | grep \"host:\" | awk '{print $2}'")
+
+build:
+    cargo build --release --bin alg2a-tools --target=thumbv7em-none-eabihf
+
+send:
+    cargo run --release --bin alg2a-tools --target=thumbv7em-none-eabihf
+
+check:
+    cargo build --release --bin alg2a-tools --target=thumbv7em-none-eabihf
+    cargo build --release --target={{current_target}} --lib
+
+export-nwa:
+    just build
+    mv target/thumbv7em-none-eabihf/release/alg2a-tools alg2a-tools.nwa
+
+[macos]
+run_nwb:
+    ./epsilon_simulator/output/release/simulator/macos/epsilon.app/Contents/MacOS/Epsilon --nwb ./target/{{current_target}}/release/libAlg2AToolsSim.dylib
+
+[linux]
+run_nwb:
+    ./epsilon_simulator/output/release/simulator/linux/epsilon.bin --nwb ./target/{{current_target}}/release/libAlg2AToolsSim.so
+
+sim jobs="1":
+    -git clone https://github.com/numworks/epsilon.git epsilon_simulator -b version-20
+    cargo build --release --target={{current_target}} --lib
+    if [ ! -f "target/simulator_patched" ]; then \
+        cd epsilon_simulator && make PLATFORM=simulator -j {{jobs}}; \
+        cd ..; \
+        echo "yes it is" >> target/simulator_patched; \
+    fi
+    just run_nwb
+
+[confirm("This will clean the built app AND the simulator. Do you want to continue ?")]
+clean-all:
+    cd ./epsilon_simulator && make clean
+    cargo clean
+
+[confirm("This will clean the built app AND DELETE the simulator. Do you want to continue ?")]
+clear-all:
+    rm -rf ./epsilon_simulator
+    cargo clean
