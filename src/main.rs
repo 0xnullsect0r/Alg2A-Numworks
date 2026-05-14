@@ -26,7 +26,7 @@ pub mod ui;
 pub mod tools;
 pub mod reference;
 
-use eadk::input::{Event, event_get};
+use eadk::input::{Event, event_get, KeyboardState, Key};
 use constants::*;
 use ui::menu::Menu;
 use ui::draw::*;
@@ -680,6 +680,26 @@ fn is_menu_screen(screen: &Screen) -> bool {
              Screen::PolyMenu | Screen::SimplifierMenu)
 }
 
+fn nav_to_key(ev: Event) -> Option<Key> {
+    match ev {
+        Event::Up    => Some(Key::Up),
+        Event::Down  => Some(Key::Down),
+        Event::Left  => Some(Key::Left),
+        Event::Right => Some(Key::Right),
+        _ => None,
+    }
+}
+
+fn dispatch(state: &mut AppState, ev: Event) {
+    if is_menu_screen(&state.screen) {
+        handle_menu_event(state, ev);
+    } else if is_ref_screen(&state.screen) {
+        handle_ref_event(state, ev);
+    } else {
+        handle_tool_event(state, ev);
+    }
+}
+
 fn is_ref_screen(screen: &Screen) -> bool {
     matches!(screen, Screen::RefFieldAxioms | Screen::RefFormulas |
              Screen::RefProperties | Screen::RefQuadRef)
@@ -706,13 +726,22 @@ pub fn main() -> u32 {
         }
 
         let ev = event_get(-1);
+        dispatch(&mut state, ev);
 
-        if is_menu_screen(&state.screen) {
-            handle_menu_event(&mut state, ev);
-        } else if is_ref_screen(&state.screen) {
-            handle_ref_event(&mut state, ev);
-        } else {
-            handle_tool_event(&mut state, ev);
+        // Key-repeat: while a nav key stays physically held, keep firing
+        if let Some(key) = nav_to_key(ev) {
+            // Initial delay before repeat starts
+            eadk::timing::msleep(300);
+            loop {
+                let ks = KeyboardState::scan();
+                if !ks.key_down(key) { break; }
+                dispatch(&mut state, ev);
+                if state.dirty {
+                    render_screen(&state);
+                    state.dirty = false;
+                }
+                eadk::timing::msleep(100);
+            }
         }
     }
 }
