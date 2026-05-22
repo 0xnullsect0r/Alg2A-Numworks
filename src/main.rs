@@ -122,6 +122,8 @@ pub struct AppState {
     pub bin_pow_n: usize,  // 0 = ^2, 1 = ^3
     pub scroll: usize,
     pub alpha_mode: bool,
+    pub alpha_locked: bool,
+    pub alpha_caps: bool,
 }
 
 impl AppState {
@@ -140,6 +142,8 @@ impl AppState {
             bin_pow_n: 0,
             scroll: 0,
             alpha_mode: false,
+            alpha_locked: false,
+            alpha_caps: false,
         }
     }
 
@@ -151,6 +155,8 @@ impl AppState {
         self.dirty = true;
         self.scroll = 0;
         self.alpha_mode = false;
+        self.alpha_locked = false;
+        self.alpha_caps = false;
         for inp in self.inputs.iter_mut() { inp.clear(); }
     }
 }
@@ -371,10 +377,14 @@ fn render_tool_screen(state: &AppState) {
     }
 
     if state.screen == Screen::ExprSimplify {
-        if state.alpha_mode {
-            draw_footer("[ALPHA] a-z on keys  Alpha=exit  EXE=Calc");
+        if state.alpha_caps {
+            draw_footer("[CAPS] next key = capital letter  Back");
+        } else if state.alpha_locked {
+            draw_footer("[ALPHA LOCK] typing letters  Alpha=exit");
+        } else if state.alpha_mode {
+            draw_footer("[alpha] one letter  Alpha=lock  Back");
         } else {
-            draw_footer("Alpha=var  Shift<>=Ineq  EXE=Calc  Back");
+            draw_footer("Alpha=var  Shift+fn=inv  </>=Ineq  EXE");
         }
     } else {
         draw_footer("Up/Dn=Field  EXE=Calc  -=Sign  .=Dot  Back=Back");
@@ -589,39 +599,41 @@ fn handle_ref_event(state: &mut AppState, ev: Event) {
     }
 }
 
-// Numworks N0120 alpha layer: A–Z mapped sequentially across function/numpad keys.
-// Exp=a, Ln=b, Log=c, Imaginary=d, Comma=e, Power=f,
-// Sine=g, Cosine=h, Tangent=i, Pi=j, Sqrt=k, Square=l,
-// 7=m, 8=n, 9=o, (=p, )=q, 4=r, 5=s, 6=t, ×=u, ÷=v,
-// 1=w, 2=x, 3=y, +=z
+// Numworks N0120 alpha layer — correct physical key layout (gray labels):
+// Numpad row (2→a … 9→h), operators (+=i … ÷=l), .=m, Ee=n, (=o, )=p, Ans=q
+// Function row: Exp=r, Ln=s, Log=t, Imaginary=u, Comma=v, Power=w, Sine=x, Cosine=y, Tangent=z
 fn alpha_char(ev: Event) -> Option<u8> {
     match ev {
-        Event::Exp          => Some(b'a'),
-        Event::Ln           => Some(b'b'),
-        Event::Log          => Some(b'c'),
-        Event::Imaginary    => Some(b'd'),
-        Event::Comma        => Some(b'e'),
-        Event::Power        => Some(b'f'),
-        Event::Sine         => Some(b'g'),
-        Event::Cosine       => Some(b'h'),
-        Event::Tangent      => Some(b'i'),
-        Event::Pi           => Some(b'j'),
-        Event::Sqrt         => Some(b'k'),
-        Event::Square       => Some(b'l'),
-        Event::Seven        => Some(b'm'),
-        Event::Eight        => Some(b'n'),
-        Event::Nine         => Some(b'o'),
-        Event::LeftParenthesis  => Some(b'p'),
-        Event::RightParenthesis => Some(b'q'),
-        Event::Four         => Some(b'r'),
-        Event::Five         => Some(b's'),
-        Event::Six          => Some(b't'),
-        Event::Multiplication   => Some(b'u'),
-        Event::Division     => Some(b'v'),
-        Event::One          => Some(b'w'),
-        Event::Two          => Some(b'x'),
-        Event::Three        => Some(b'y'),
-        Event::Plus         => Some(b'z'),
+        // Numpad 2–9 → a–h
+        Event::Two          => Some(b'a'),
+        Event::Three        => Some(b'b'),
+        Event::Four         => Some(b'c'),
+        Event::Five         => Some(b'd'),
+        Event::Six          => Some(b'e'),
+        Event::Seven        => Some(b'f'),
+        Event::Eight        => Some(b'g'),
+        Event::Nine         => Some(b'h'),
+        // Operators → i–l
+        Event::Plus         => Some(b'i'),
+        Event::Minus        => Some(b'j'),
+        Event::Multiplication   => Some(b'k'),
+        Event::Division     => Some(b'l'),
+        // Bottom row → m–q
+        Event::Dot          => Some(b'm'),
+        Event::Ee           => Some(b'n'),
+        Event::LeftParenthesis  => Some(b'o'),
+        Event::RightParenthesis => Some(b'p'),
+        Event::Ans          => Some(b'q'),
+        // Function row → r–z
+        Event::Exp          => Some(b'r'),
+        Event::Ln           => Some(b's'),
+        Event::Log          => Some(b't'),
+        Event::Imaginary    => Some(b'u'),
+        Event::Comma        => Some(b'v'),
+        Event::Power        => Some(b'w'),
+        Event::Sine         => Some(b'x'),
+        Event::Cosine       => Some(b'y'),
+        Event::Tangent      => Some(b'z'),
         _ => None,
     }
 }
@@ -632,47 +644,76 @@ fn handle_tool_event(state: &mut AppState, ev: Event) {
 
     // ExprSimplify: intercept operator/variable keys and scroll
     if state.screen == Screen::ExprSimplify {
-        // Alpha mode toggle (sticky — press Alpha again to exit)
+        // ── Alpha state machine ──────────────────────────────────────────────
         if ev == Event::Alpha {
-            state.alpha_mode = !state.alpha_mode;
+            if !state.alpha_mode {
+                // First press: one-shot lowercase
+                state.alpha_mode = true; state.alpha_locked = false; state.alpha_caps = false;
+            } else if !state.alpha_locked {
+                // Second press while in one-shot: upgrade to lock
+                state.alpha_locked = true;
+            } else {
+                // Press while locked: exit
+                state.alpha_mode = false; state.alpha_locked = false; state.alpha_caps = false;
+            }
+            state.dirty = true;
+            return;
+        }
+        // Shift+Alpha (AlphaLock event): one-shot capital letter
+        if ev == Event::AlphaLock {
+            state.alpha_mode = true; state.alpha_locked = false; state.alpha_caps = true;
             state.dirty = true;
             return;
         }
 
-        // In alpha mode, map keys to their A–Z alpha layer characters
+        // In alpha mode, map keys to letters
         if state.alpha_mode {
             if let Some(letter) = alpha_char(ev) {
-                state.inputs[0].push_char(letter);
+                let ch = if state.alpha_caps { letter.to_ascii_uppercase() } else { letter };
+                state.inputs[0].push_char(ch);
                 state.result.clear();
+                state.alpha_caps = false; // caps is always consumed after one letter
+                if !state.alpha_locked { state.alpha_mode = false; }
                 state.dirty = true;
                 return;
             }
-            // Unmapped keys (digits, Minus, Dot, Backspace, etc.) fall through to normal handling
+            // Keys with no alpha letter fall through to their normal function
         }
 
         match ev {
-            // Shift-modified inequality/equality keys
+            // ── Shift-modified function keys ────────────────────────────────
+            Event::Arcsine    => { state.inputs[0].push_str("asin("); state.result.clear(); state.dirty = true; return; }
+            Event::Arccosine  => { state.inputs[0].push_str("acos("); state.result.clear(); state.dirty = true; return; }
+            Event::Arctangent => { state.inputs[0].push_str("atan("); state.result.clear(); state.dirty = true; return; }
+            Event::Sto        => { state.inputs[0].push_str("->"); state.result.clear(); state.dirty = true; return; }
+            Event::Clear      => { state.inputs[0].clear(); state.result.clear(); state.dirty = true; return; }
+            Event::LeftBracket    => { state.inputs[0].push_char(b'['); state.result.clear(); state.dirty = true; return; }
+            Event::RightBracket   => { state.inputs[0].push_char(b']'); state.result.clear(); state.dirty = true; return; }
+            Event::LeftBrace      => { state.inputs[0].push_char(b'{'); state.result.clear(); state.dirty = true; return; }
+            Event::RightBrace     => { state.inputs[0].push_char(b'}'); state.result.clear(); state.dirty = true; return; }
+            Event::Underscore     => { state.inputs[0].push_char(b'_'); state.result.clear(); state.dirty = true; return; }
+            // ── Shift-modified comparison/equality keys ─────────────────────
             Event::Lower   => { state.inputs[0].push_char(b'<'); state.result.clear(); state.dirty = true; return; }
             Event::Greater => { state.inputs[0].push_char(b'>'); state.result.clear(); state.dirty = true; return; }
             Event::Equal   => { state.inputs[0].push_char(b'='); state.result.clear(); state.dirty = true; return; }
-            // Operator and function keys (only reached when NOT in alpha mode, or when alpha_char returned None)
-            Event::Plus => { state.inputs[0].push_char(b'+'); state.result.clear(); state.dirty = true; return; }
-            Event::Multiplication => { state.inputs[0].push_char(b'*'); state.result.clear(); state.dirty = true; return; }
-            Event::Division => { state.inputs[0].push_char(b'/'); state.result.clear(); state.dirty = true; return; }
-            Event::Power => { state.inputs[0].push_char(b'^'); state.result.clear(); state.dirty = true; return; }
-            Event::Xnt => { state.inputs[0].push_char(b'x'); state.result.clear(); state.dirty = true; return; }
-            Event::LeftParenthesis => { state.inputs[0].push_char(b'('); state.result.clear(); state.dirty = true; return; }
-            Event::RightParenthesis => { state.inputs[0].push_char(b')'); state.result.clear(); state.dirty = true; return; }
-            Event::Minus => { state.inputs[0].push_char(b'-'); state.result.clear(); state.dirty = true; return; }
-            Event::Sine => { state.inputs[0].push_str("sin("); state.result.clear(); state.dirty = true; return; }
-            Event::Cosine => { state.inputs[0].push_str("cos("); state.result.clear(); state.dirty = true; return; }
+            // ── Primary function/operator keys ──────────────────────────────
+            Event::Sine   => { state.inputs[0].push_str("sin(");  state.result.clear(); state.dirty = true; return; }
+            Event::Cosine => { state.inputs[0].push_str("cos(");  state.result.clear(); state.dirty = true; return; }
             Event::Tangent => { state.inputs[0].push_str("tan("); state.result.clear(); state.dirty = true; return; }
-            Event::Sqrt => { state.inputs[0].push_str("sqrt("); state.result.clear(); state.dirty = true; return; }
-            Event::Ln => { state.inputs[0].push_str("ln("); state.result.clear(); state.dirty = true; return; }
-            Event::Log => { state.inputs[0].push_str("log("); state.result.clear(); state.dirty = true; return; }
-            Event::Pi => { state.inputs[0].push_str("pi"); state.result.clear(); state.dirty = true; return; }
-            Event::Exp => { state.inputs[0].push_str("e^("); state.result.clear(); state.dirty = true; return; }
-            Event::Square => { state.inputs[0].push_str("^2"); state.result.clear(); state.dirty = true; return; }
+            Event::Sqrt   => { state.inputs[0].push_str("sqrt("); state.result.clear(); state.dirty = true; return; }
+            Event::Ln     => { state.inputs[0].push_str("ln(");   state.result.clear(); state.dirty = true; return; }
+            Event::Log    => { state.inputs[0].push_str("log(");  state.result.clear(); state.dirty = true; return; }
+            Event::Pi     => { state.inputs[0].push_str("pi");    state.result.clear(); state.dirty = true; return; }
+            Event::Exp    => { state.inputs[0].push_str("e^(");   state.result.clear(); state.dirty = true; return; }
+            Event::Square => { state.inputs[0].push_str("^2");    state.result.clear(); state.dirty = true; return; }
+            Event::Power  => { state.inputs[0].push_char(b'^');   state.result.clear(); state.dirty = true; return; }
+            Event::Plus   => { state.inputs[0].push_char(b'+');   state.result.clear(); state.dirty = true; return; }
+            Event::Minus  => { state.inputs[0].push_char(b'-');   state.result.clear(); state.dirty = true; return; }
+            Event::Multiplication => { state.inputs[0].push_char(b'*'); state.result.clear(); state.dirty = true; return; }
+            Event::Division       => { state.inputs[0].push_char(b'/'); state.result.clear(); state.dirty = true; return; }
+            Event::Xnt            => { state.inputs[0].push_char(b'x'); state.result.clear(); state.dirty = true; return; }
+            Event::LeftParenthesis  => { state.inputs[0].push_char(b'('); state.result.clear(); state.dirty = true; return; }
+            Event::RightParenthesis => { state.inputs[0].push_char(b')'); state.result.clear(); state.dirty = true; return; }
             Event::Up => {
                 if state.result.ready && state.scroll > 0 { state.scroll -= 1; state.dirty = true; return; }
             }
