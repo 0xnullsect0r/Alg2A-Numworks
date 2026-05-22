@@ -121,6 +121,7 @@ pub struct AppState {
     pub cubes_op: usize,
     pub bin_pow_n: usize,  // 0 = ^2, 1 = ^3
     pub scroll: usize,
+    pub alpha_mode: bool,
 }
 
 impl AppState {
@@ -138,6 +139,7 @@ impl AppState {
             cubes_op: 0,
             bin_pow_n: 0,
             scroll: 0,
+            alpha_mode: false,
         }
     }
 
@@ -148,6 +150,7 @@ impl AppState {
         self.result.clear();
         self.dirty = true;
         self.scroll = 0;
+        self.alpha_mode = false;
         for inp in self.inputs.iter_mut() { inp.clear(); }
     }
 }
@@ -367,7 +370,15 @@ fn render_tool_screen(state: &AppState) {
         }
     }
 
-    draw_footer("Up/Dn=Field  EXE=Calc  -=Sign  .=Dot  Back=Back");
+    if state.screen == Screen::ExprSimplify {
+        if state.alpha_mode {
+            draw_footer("[ALPHA] a-z on keys  Alpha=exit  EXE=Calc");
+        } else {
+            draw_footer("Alpha=var  Shift<>=Ineq  EXE=Calc  Back");
+        }
+    } else {
+        draw_footer("Up/Dn=Field  EXE=Calc  -=Sign  .=Dot  Back=Back");
+    }
 }
 
 fn render_screen(state: &AppState) {
@@ -578,13 +589,73 @@ fn handle_ref_event(state: &mut AppState, ev: Event) {
     }
 }
 
+// Numworks N0120 alpha layer: A–Z mapped sequentially across function/numpad keys.
+// Exp=a, Ln=b, Log=c, Imaginary=d, Comma=e, Power=f,
+// Sine=g, Cosine=h, Tangent=i, Pi=j, Sqrt=k, Square=l,
+// 7=m, 8=n, 9=o, (=p, )=q, 4=r, 5=s, 6=t, ×=u, ÷=v,
+// 1=w, 2=x, 3=y, +=z
+fn alpha_char(ev: Event) -> Option<u8> {
+    match ev {
+        Event::Exp          => Some(b'a'),
+        Event::Ln           => Some(b'b'),
+        Event::Log          => Some(b'c'),
+        Event::Imaginary    => Some(b'd'),
+        Event::Comma        => Some(b'e'),
+        Event::Power        => Some(b'f'),
+        Event::Sine         => Some(b'g'),
+        Event::Cosine       => Some(b'h'),
+        Event::Tangent      => Some(b'i'),
+        Event::Pi           => Some(b'j'),
+        Event::Sqrt         => Some(b'k'),
+        Event::Square       => Some(b'l'),
+        Event::Seven        => Some(b'm'),
+        Event::Eight        => Some(b'n'),
+        Event::Nine         => Some(b'o'),
+        Event::LeftParenthesis  => Some(b'p'),
+        Event::RightParenthesis => Some(b'q'),
+        Event::Four         => Some(b'r'),
+        Event::Five         => Some(b's'),
+        Event::Six          => Some(b't'),
+        Event::Multiplication   => Some(b'u'),
+        Event::Division     => Some(b'v'),
+        Event::One          => Some(b'w'),
+        Event::Two          => Some(b'x'),
+        Event::Three        => Some(b'y'),
+        Event::Plus         => Some(b'z'),
+        _ => None,
+    }
+}
+
 fn handle_tool_event(state: &mut AppState, ev: Event) {
     let (_, labels) = tool_info(&state.screen);
     let num_inputs = labels.len();
 
     // ExprSimplify: intercept operator/variable keys and scroll
     if state.screen == Screen::ExprSimplify {
+        // Alpha mode toggle (sticky — press Alpha again to exit)
+        if ev == Event::Alpha {
+            state.alpha_mode = !state.alpha_mode;
+            state.dirty = true;
+            return;
+        }
+
+        // In alpha mode, map keys to their A–Z alpha layer characters
+        if state.alpha_mode {
+            if let Some(letter) = alpha_char(ev) {
+                state.inputs[0].push_char(letter);
+                state.result.clear();
+                state.dirty = true;
+                return;
+            }
+            // Unmapped keys (digits, Minus, Dot, Backspace, etc.) fall through to normal handling
+        }
+
         match ev {
+            // Shift-modified inequality/equality keys
+            Event::Lower   => { state.inputs[0].push_char(b'<'); state.result.clear(); state.dirty = true; return; }
+            Event::Greater => { state.inputs[0].push_char(b'>'); state.result.clear(); state.dirty = true; return; }
+            Event::Equal   => { state.inputs[0].push_char(b'='); state.result.clear(); state.dirty = true; return; }
+            // Operator and function keys (only reached when NOT in alpha mode, or when alpha_char returned None)
             Event::Plus => { state.inputs[0].push_char(b'+'); state.result.clear(); state.dirty = true; return; }
             Event::Multiplication => { state.inputs[0].push_char(b'*'); state.result.clear(); state.dirty = true; return; }
             Event::Division => { state.inputs[0].push_char(b'/'); state.result.clear(); state.dirty = true; return; }

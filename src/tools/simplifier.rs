@@ -461,6 +461,74 @@ pub fn exp_identity_rules(inputs: &[InputBuffer], result: &mut ToolResult) {
     result.finish();
 }
 
+// ── Variable detection & normalization helpers ────────────────────────────────
+
+// Find the first standalone alphabetic character (not part of a multi-char word
+// like "sin"/"cos") to use as the polynomial variable.  Skips 'e'/'E' because
+// that letter is also Euler's constant and would be ambiguous.
+fn detect_poly_var(s: &str) -> char {
+    let bytes = s.as_bytes();
+    for i in 0..bytes.len() {
+        let c = bytes[i];
+        if c.is_ascii_alphabetic() {
+            let prev_alpha = i > 0 && bytes[i - 1].is_ascii_alphabetic();
+            let next_alpha = i + 1 < bytes.len() && bytes[i + 1].is_ascii_alphabetic();
+            if !prev_alpha && !next_alpha {
+                let lower = c.to_ascii_lowercase() as char;
+                if lower != 'e' { return lower; }
+            }
+        }
+    }
+    'x'
+}
+
+// Replace standalone occurrences of `var` (and its uppercase counterpart)
+// with 'x' so the existing parsers can handle any variable letter.
+fn normalize_input(s: &str, var: char) -> String {
+    if var == 'x' { return s.into(); }
+    let mut out = String::new();
+    let bytes = s.as_bytes();
+    let vl = var.to_ascii_lowercase() as u8;
+    let vu = var.to_ascii_uppercase() as u8;
+    for i in 0..bytes.len() {
+        let c = bytes[i];
+        if c == vl || c == vu {
+            let prev_alpha = i > 0 && bytes[i - 1].is_ascii_alphabetic();
+            let next_alpha = i + 1 < bytes.len() && bytes[i + 1].is_ascii_alphabetic();
+            if !prev_alpha && !next_alpha {
+                out.push('x');
+            } else {
+                out.push(c as char);
+            }
+        } else {
+            out.push(c as char);
+        }
+    }
+    out
+}
+
+// Substitute standalone 'x' back to `var` in a formatted output string.
+fn replace_x_with_var(s: &str, var: char) -> String {
+    if var == 'x' { return s.into(); }
+    let mut out = String::new();
+    let bytes = s.as_bytes();
+    for i in 0..bytes.len() {
+        let c = bytes[i];
+        if c == b'x' || c == b'X' {
+            let prev_alpha = i > 0 && bytes[i - 1].is_ascii_alphabetic();
+            let next_alpha = i + 1 < bytes.len() && bytes[i + 1].is_ascii_alphabetic();
+            if !prev_alpha && !next_alpha {
+                out.push(if c == b'X' { var.to_ascii_uppercase() } else { var });
+            } else {
+                out.push(c as char);
+            }
+        } else {
+            out.push(c as char);
+        }
+    }
+    out
+}
+
 // ── General Expression Simplifier ────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -786,6 +854,12 @@ pub fn general_simplify(expr: &str) -> ToolResult {
         return result;
     }
 
+    // Detect the variable letter used (default 'x') and normalise it to 'x'
+    // so the parsers below don't need to change.
+    let var = detect_poly_var(expr);
+    let normalized = normalize_input(expr, var);
+    let expr = normalized.as_str(); // shadow with normalised version
+
     // Detect if expression uses functions or constants → use FExpr path
     let has_fns = expr.contains("sin") || expr.contains("cos") || expr.contains("tan")
         || expr.contains("sqrt") || expr.contains("ln") || expr.contains("log")
@@ -835,6 +909,14 @@ pub fn general_simplify(expr: &str) -> ToolResult {
             Err(e) => { result.set_warn(&format!("Parse error: {}", e)); }
         }
     }
+
+    // Substitute the actual variable letter back into every output line
+    if var != 'x' {
+        for (_, value) in result.lines.iter_mut() {
+            *value = replace_x_with_var(value, var);
+        }
+    }
+
     result.finish();
     result
 }
